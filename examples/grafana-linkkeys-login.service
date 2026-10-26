@@ -1,0 +1,33 @@
+# Install:
+#   useradd --system --home /var/lib/grafana-linkkeys-login --shell /usr/sbin/nologin grafana-linkkeys-login
+#   install -d -m 0700 -o grafana-linkkeys-login /var/lib/grafana-linkkeys-login
+#   sudo -u grafana-linkkeys-login grafana-linkkeys-login init-identity -config /etc/grafana-linkkeys-login/config.yaml
+[Unit]
+Description=LinkKeys login proxy for Grafana
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/grafana-linkkeys-login serve -config /etc/grafana-linkkeys-login/config.yaml
+Restart=on-failure
+RestartSec=5
+User=grafana-linkkeys-login
+Group=grafana-linkkeys-login
+ReadWritePaths=/var/lib/grafana-linkkeys-login
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

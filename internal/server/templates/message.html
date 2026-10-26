@@ -1,0 +1,8 @@
+{{define "message.html"}}{{template "head" .Title}}
+<main>
+  <h1>{{.Title}}</h1>
+  <p>{{.Message}}</p>
+  {{if .Detail}}<p><code>{{.Detail}}</code></p>{{end}}
+  <a class="button" href="/linkkeys/login">Sign in</a>
+</main>
+{{template "foot"}}{{end}}

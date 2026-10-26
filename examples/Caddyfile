@@ -1,0 +1,6 @@
+# TLS in front of grafana-linkkeys-login. "tls internal" uses Caddy's own CA;
+# use a public certificate when the name is public.
+grafana.example.lan {
+	tls internal
+	reverse_proxy 127.0.0.1:3001
+}

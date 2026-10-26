@@ -1,0 +1,54 @@
+# Grafana and the proxy on a private network. Only the proxy port is
+# published. Grafana trusts identity headers only from the proxy's fixed
+# address.
+#
+# Before the first start:
+#   mkdir -p state && sudo chown 65532:65532 state && chmod 700 state
+#   docker compose run --rm login init-identity -config /config/config.yaml
+# (The image runs as the distroless "nonroot" user, UID 65532.)
+# In config.yaml set: listen: 0.0.0.0:3001, upstream: http://grafana:3000,
+# identity_file: /state/identity
+
+services:
+  login:
+    build: ..
+    command: ["serve", "-config", "/config/config.yaml"]
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./state:/state
+    ports:
+      - "127.0.0.1:3001:3001"
+    networks:
+      grafana:
+        ipv4_address: 172.30.9.10
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:12.2.0
+    environment:
+      GF_SERVER_ROOT_URL: https://grafana.example.lan/
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_SIGNOUT_REDIRECT_URL: https://grafana.example.lan/linkkeys/logout
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: X-WEBAUTH-USER
+      GF_AUTH_PROXY_HEADER_PROPERTY: username
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_AUTH_PROXY_WHITELIST: 172.30.9.10
+      GF_AUTH_PROXY_HEADERS: "Name:X-WEBAUTH-NAME, Email:X-WEBAUTH-EMAIL, Role:X-WEBAUTH-ROLE"
+      GF_AUTH_PROXY_SYNC_TTL: "5"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - grafana
+    restart: unless-stopped
+
+networks:
+  grafana:
+    ipam:
+      config:
+        - subnet: 172.30.9.0/24
+
+volumes:
+  grafana-data:

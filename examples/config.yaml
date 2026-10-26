@@ -1,0 +1,32 @@
+# grafana-linkkeys-login configuration.
+
+listen: 127.0.0.1:3001
+
+# The URL that browsers use. It must match exactly, because LinkKeys signs
+# the callback URL that is built from it.
+public_url: https://grafana.example.lan
+
+upstream: http://127.0.0.1:3000
+
+# Create with: grafana-linkkeys-login init-identity -config <this file>
+identity_file: /var/lib/grafana-linkkeys-login/identity
+app_name: Example Grafana
+
+# Optional. Users can type "alice" instead of "alice@example.com".
+default_domain: example.com
+
+# "subject" (default, stable) or "handle" (easier to read).
+grafana_username: subject
+
+session:
+  ttl: 12h
+  login_timeout: 5m
+
+# Logins that match no rule are refused.
+access:
+  users:
+    - identity: alice@example.com
+      role: Admin
+  domains:
+    - domain: example.com
+      role: Viewer

@@ -1,0 +1,14 @@
+{{define "login.html"}}{{template "head" "Sign in"}}
+<main>
+  <h1>Sign in to Grafana</h1>
+  <p>Use your LinkKeys login.</p>
+  {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+  <form method="post" action="/linkkeys/login">
+    <label for="login">LinkKeys login</label>
+    <input id="login" name="login" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="{{.Placeholder}}" required autofocus>
+    {{if .DefaultDomain}}<p class="hint">You can type only your handle. The domain {{.DefaultDomain}} is added.</p>{{end}}
+    <input type="hidden" name="next" value="{{.Next}}">
+    <button type="submit">Continue</button>
+  </form>
+</main>
+{{template "foot"}}{{end}}
