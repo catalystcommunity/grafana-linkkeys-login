@@ -8,12 +8,33 @@ public_url: https://grafana.example.lan
 
 upstream: http://127.0.0.1:3000
 
-# Create with: grafana-linkkeys-login init-identity -config <this file>
+# "local-rp" (default) or "rp".
+mode: local-rp
+
+# local-rp mode. Create with:
+#   grafana-linkkeys-login init-identity -config <this file>
 identity_file: /var/lib/grafana-linkkeys-login/identity
 app_name: Example Grafana
 
+# rp mode. public_url must use https.
+# rp:
+#   domain: example.com
+#   address: linkkeys.example.com:4987
+#   # Optional: connect here instead (TLS still checks the name and keys).
+#   # dial_address: 10.0.0.30:4987
+#   # The fp= values of: dig +short TXT _linkkeys.example.com
+#   fingerprints:
+#     - 0000000000000000000000000000000000000000000000000000000000000000
+#   api_key_file: /etc/grafana-linkkeys-login/rp-api-key
+
 # Optional. Users can type "alice" instead of "alice@example.com".
 default_domain: example.com
+
+# Reverse proxies in front of this proxy (here, Caddy on the same host).
+# Rate limits use the client address from X-Forwarded-For only for these.
+trusted_proxies:
+  - 127.0.0.1/32
+  - ::1/128
 
 # "subject" (default, stable) or "handle" (easier to read).
 grafana_username: subject

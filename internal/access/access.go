@@ -40,6 +40,26 @@ func NewPolicy(cfg config.AccessConfig) *Policy {
 	return &Policy{users: cfg.Users, domains: cfg.Domains}
 }
 
+// AllowsDomain reports whether any rule can allow an account of domain.
+// The server checks this before it starts a login, so that an
+// unauthenticated client cannot make the proxy contact any other domain.
+func (p *Policy) AllowsDomain(domain string) bool {
+	if domain == "" {
+		return false
+	}
+	for _, u := range p.users {
+		if _, d, ok := strings.Cut(u.Identity, "@"); ok && strings.EqualFold(d, domain) {
+			return true
+		}
+	}
+	for _, d := range p.domains {
+		if strings.EqualFold(d.Domain, domain) {
+			return true
+		}
+	}
+	return false
+}
+
 // Decide returns the Grafana role for id. ok is false when no rule allows
 // id. User rules take precedence over domain rules. Matching ignores ASCII
 // case.

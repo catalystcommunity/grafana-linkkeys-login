@@ -15,9 +15,17 @@ browser ──TLS──> TLS server ──> grafana-linkkeys-login ──> Grafa
                                      └── LinkKeys IDP of the user's domain
 ```
 
-The proxy uses the LinkKeys **DNS-less local RP** mode. The proxy has its own
-signing key. You do not run a LinkKeys RP server, and you need no API key. A
-LinkKeys domain admin approves the proxy's key fingerprint one time.
+The proxy has two modes:
+
+| Mode | How it works | Use it when |
+| --- | --- | --- |
+| `local-rp` (default) | The proxy has its own signing key (LinkKeys DNS-less local RP). An admin of each LinkKeys domain approves the key fingerprint one time. | You do not have a LinkKeys RP server. |
+| `rp` | The proxy is an application of an RP domain. It calls the domain's LinkKeys RP server with an API key, over TLS that is pinned to the server's key fingerprints. | You have a LinkKeys server with the RP function enabled. Its admin manages the application and its API key. |
+
+In `rp` mode, `public_url` must use https. It can be on any host. It does
+not have to be in the RP domain. When it is outside the RP domain, the IDP
+of each user must run LinkKeys 0.16.7 or later. An older IDP refuses the
+login with `callback_off_domain`.
 
 ## Security model
 
@@ -28,6 +36,16 @@ LinkKeys domain admin approves the proxy's key fingerprint one time.
   client cannot set them.
 - A login that matches no `access` rule is refused. The proxy does not start
   without at least one rule.
+- The proxy starts a login only for a domain that an `access` rule names.
+  Thus an unauthenticated client cannot make the proxy contact other
+  domains.
+- Login starts are rate limited: 10 at once and then 1 each 30 seconds for
+  each client address, and 60 each second for all clients. Behind a reverse
+  proxy, set `trusted_proxies`. If you do not, all clients share the address
+  of the reverse proxy.
+- Unauthenticated requests get only the login pages. Grafana receives a
+  request only after a successful login. This makes the proxy safe to put
+  on the internet, if Grafana itself is not reachable.
 - The login state is single-use and expires after `session.login_timeout`.
   A browser cookie binds the callback to the browser that started the login.
   This prevents login CSRF.
@@ -38,6 +56,18 @@ LinkKeys domain admin approves the proxy's key fingerprint one time.
 - After login, the proxy redirects only to a path on the same site.
 - The SDK verifies the assertion, the audience, the nonce, the times, and
   every claim signature against DNS-pinned domain keys.
+- In `rp` mode, the RP server verifies the assertion signature. The proxy
+  then checks the domain, the audience (the RP domain), the nonce, the
+  issue and expiry times, that user info and each claim are about the same
+  user, that the user authorized each claim type, and that the `handle`
+  claim is present. The proxy itself verifies every claim signature. It
+  gets the keys of the signing domain through the RP server, keeps only the
+  keys that the domain's own `_linkkeys` DNS record pins, and applies the
+  revocation certificates. Thus the RP server is not a trust anchor for
+  claims, and the proxy connects only to the RP server. One failed check
+  stops the login, with one exception: an optional claim (`display_name`,
+  `email`) with a signature that does not verify is not used, and the
+  proxy logs a warning. The login continues without that claim.
 
 Limits:
 
@@ -102,20 +132,63 @@ docker build -t grafana-linkkeys-login .
 
    Then sign in again.
 
+### Set up `rp` mode
+
+Do these steps instead of steps 2 and 6 above.
+
+1. On the LinkKeys server of the RP domain (the RP function must be enabled),
+   create a service account with an API key:
+
+   ```sh
+   linkkeys user create grafana "Grafana" --api-key --relation api_access
+   ```
+
+   The command shows the API key one time. The consent screen shows the
+   display name ("Grafana") to users. The account username is the
+   application ID, so it must contain only `A-Z a-z 0-9 - _ .`.
+
+2. Write the API key to a file with mode 0600, for example
+   `/etc/grafana-linkkeys-login/rp-api-key`.
+
+3. Get the server fingerprints from the `fp=` values of the domain's
+   `_linkkeys` TXT record:
+
+   ```sh
+   dig +short TXT _linkkeys.example.com
+   ```
+
+4. Set `mode: rp` and the `rp` keys in the configuration file. See the
+   comments in [`examples/config.yaml`](examples/config.yaml).
+
+The proxy asks for the `handle` claim (required), and for the `display_name`
+and `email` claims (optional). The user sees this request on the LinkKeys
+consent screen.
+
 ## Configuration
+
+Set the environment variable `LOG_LEVEL=debug` to log more. In debug mode, the
+log contains the value and signatures of each claim that does not verify.
+This is user data; use debug mode only to find a fault.
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `listen` | `127.0.0.1:3001` | Address of the proxy. |
 | `public_url` | (required) | Origin that browsers use, such as `https://grafana.example.lan`. No path. |
 | `upstream` | `http://127.0.0.1:3000` | Grafana. |
-| `identity_file` | (required) | Local-RP key material. Mode must be 0600. |
+| `mode` | `local-rp` | `local-rp` or `rp`. |
+| `identity_file` | (required in `local-rp`) | Local-RP key material. Mode must be 0600. |
+| `rp.domain` | (required in `rp`) | The RP domain. It is the audience of each assertion. |
+| `rp.address` | (required in `rp`) | RP server CSIL-RPC endpoint, `host:port` (port 4987 by default on LinkKeys). The host is the TLS server name. |
+| `rp.dial_address` | none | Connect to this `host:port` instead, for example a gateway on the LAN. TLS still uses the host of `rp.address` and the fingerprints. |
+| `rp.fingerprints` | (required in `rp`) | SHA-256 fingerprints of the RP server keys. These are the trust anchor. |
+| `rp.api_key_file` | (required in `rp`) | File with the RP API key. Mode must be 0600. |
 | `app_name` | `Grafana` | Name for a new identity. LinkKeys shows it as unverified text. |
 | `default_domain` | none | Users can type only a handle. This domain is added. |
 | `grafana_username` | `subject` | `subject` or `handle`. See the limits above. |
+| `trusted_proxies` | none | CIDR ranges of reverse proxies in front of this proxy, such as `127.0.0.1/32`. The client address for rate limits comes from `X-Forwarded-For` only for these. |
 | `session.ttl` | `12h` | Session lifetime. Users sign in again after this. |
 | `session.login_timeout` | `5m` | Time to complete a login. 30s to 15m. |
-| `access.users[]` | none | `identity` (`<handle>@<domain>` or `<user-id>@<domain>`) and `role`. |
+| `access.users[]` | none | `identity` (`<handle>@<domain>` or `<user-id>@<domain>`) and `role`. The handle is the verified `handle` claim, which can be different from the name that the user types to log in. |
 | `access.domains[]` | none | `domain` and `role`. Allows every account of the domain. |
 | `headers.*` | `X-WEBAUTH-USER`, `-NAME`, `-EMAIL`, `-ROLE` | Must match Grafana's `[auth.proxy]` settings. |
 

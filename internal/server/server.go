@@ -7,8 +7,10 @@ import (
 	"errors"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/catalystcommunity/grafana-linkkeys-login/internal/access"
 	"github.com/catalystcommunity/grafana-linkkeys-login/internal/config"
 	"github.com/catalystcommunity/grafana-linkkeys-login/internal/linkkeys"
+	"github.com/catalystcommunity/grafana-linkkeys-login/internal/ratelimit"
 	"github.com/catalystcommunity/grafana-linkkeys-login/internal/store"
 )
 
@@ -37,6 +40,17 @@ var pages = template.Must(template.ParseFS(templateFS, "templates/*.html"))
 // early; the SDK does the full check.
 var selectorPattern = regexp.MustCompile(`^([A-Za-z0-9._-]{1,128}@)?[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$`)
 
+// Login start limits. Each start makes the proxy contact a LinkKeys domain
+// and keeps a pending attempt in memory, so an unauthenticated client must
+// not be able to start many.
+const (
+	clientBurst    = 10
+	clientInterval = 30 * time.Second
+	globalBurst    = 60
+	globalInterval = time.Second
+	maxClients     = 10000
+)
+
 // Server handles every request.
 type Server struct {
 	cfg     *config.Config
@@ -45,6 +59,9 @@ type Server struct {
 	store   *store.Store
 	proxy   *httputil.ReverseProxy
 	log     *slog.Logger
+
+	clientLimit *ratelimit.Limiter
+	globalLimit *ratelimit.Limiter
 
 	sessionCookie string
 	attemptCookie string
@@ -66,6 +83,8 @@ func New(cfg *config.Config, backend linkkeys.Backend, st *store.Store, log *slo
 		sessionCookie: "lk_session",
 		attemptCookie: "lk_attempt",
 		authHeaders:   []string{cfg.Headers.User, cfg.Headers.Name, cfg.Headers.Email, cfg.Headers.Role},
+		clientLimit:   ratelimit.New(clientBurst, clientInterval, maxClients, nil),
+		globalLimit:   ratelimit.New(globalBurst, globalInterval, 1, nil),
 	}
 	if cfg.SecureCookies() {
 		// The __Host- prefix makes the browser refuse the cookie unless it
@@ -87,6 +106,12 @@ func New(cfg *config.Config, backend linkkeys.Backend, st *store.Store, log *slo
 		},
 	}
 	return s, nil
+}
+
+// Sweep removes expired rate limit state. Call it periodically.
+func (s *Server) Sweep() {
+	s.clientLimit.Sweep()
+	s.globalLimit.Sweep()
 }
 
 // ServeHTTP implements http.Handler.
@@ -187,6 +212,18 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !selectorPattern.MatchString(selector) {
 		s.renderLogin(w, http.StatusBadRequest, next, "Enter your LinkKeys login, for example alice@example.com.")
+		return
+	}
+	domain := strings.ToLower(selector[strings.LastIndex(selector, "@")+1:])
+	if !s.policy.AllowsDomain(domain) {
+		s.renderLogin(w, http.StatusForbidden, next, "Accounts of that domain cannot sign in here.")
+		return
+	}
+	client := s.clientIP(r)
+	if !s.clientLimit.Allow(client) || !s.globalLimit.Allow("") {
+		s.log.Warn("login start rate limited", "client", client)
+		w.Header().Set("Retry-After", "30")
+		s.renderLogin(w, http.StatusTooManyRequests, next, "Too many login attempts. Wait a short time and try again.")
 		return
 	}
 
@@ -324,10 +361,43 @@ func (s *Server) cookie(name, value string, maxAge int) *http.Cookie {
 	}
 }
 
+// clientIP returns the client address for rate limits. X-Forwarded-For is
+// used only when the connection comes from a trusted proxy. The result is
+// the nearest address in that header that is not a trusted proxy.
+func (s *Server) clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	if !s.cfg.IsTrustedProxy(addr) {
+		return addr.Unmap().String()
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			// The chain is broken; do not trust anything further left.
+			break
+		}
+		addr = hop
+		if !s.cfg.IsTrustedProxy(hop) {
+			break
+		}
+	}
+	return addr.Unmap().String()
+}
+
 // sameOrigin refuses a form post that a browser reports as cross-site.
+// Sec-Fetch-Site decides when it is present, because a page cannot set it.
+// A browser sends "Origin: null" on a same-origin post when the referrer
+// policy is no-referrer, as on these pages.
 func (s *Server) sameOrigin(r *http.Request) bool {
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
-		return false
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		return site == "same-origin" || site == "none"
 	}
 	if origin := r.Header.Get("Origin"); origin != "" && origin != s.cfg.PublicOrigin() {
 		return false

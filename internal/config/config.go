@@ -5,8 +5,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +21,16 @@ const (
 	RoleViewer = "Viewer"
 	RoleEditor = "Editor"
 	RoleAdmin  = "Admin"
+)
+
+// Values for Mode.
+const (
+	// ModeLocalRP uses a DNS-less local-RP identity. Each LinkKeys domain
+	// admin approves its fingerprint.
+	ModeLocalRP = "local-rp"
+	// ModeRP uses a LinkKeys RP server. The proxy is an application of the
+	// RP domain and authenticates to the RP server with an API key.
+	ModeRP = "rp"
 )
 
 // Values for GrafanaUsername.
@@ -60,9 +73,14 @@ type Config struct {
 	// Upstream is the Grafana base URL. Grafana must not be reachable by
 	// anything except this proxy.
 	Upstream string `yaml:"upstream"`
+	// Mode is "local-rp" (default) or "rp".
+	Mode string `yaml:"mode"`
 	// IdentityFile holds this proxy's LinkKeys local-RP key material. Treat
-	// it as a secret. Create it with the init-identity command.
+	// it as a secret. Create it with the init-identity command. Local-RP
+	// mode only.
 	IdentityFile string `yaml:"identity_file"`
+	// RP configures the RP server. RP mode only.
+	RP RPConfig `yaml:"rp"`
 	// AppName is the display name that init-identity writes into a new
 	// identity. LinkKeys shows it on the consent screen as unverified text.
 	AppName string `yaml:"app_name"`
@@ -72,10 +90,37 @@ type Config struct {
 	// GrafanaUsername selects the Grafana username format: "subject"
 	// (default) or "handle".
 	GrafanaUsername string `yaml:"grafana_username"`
+	// TrustedProxies are the CIDR ranges of reverse proxies in front of this
+	// proxy, for example Caddy on 127.0.0.1/32. The client address for rate
+	// limits comes from X-Forwarded-For only when the connection comes from
+	// one of these ranges. Empty means the connection address is used.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+
+	trustedPrefixes []netip.Prefix
 
 	Session SessionConfig `yaml:"session"`
 	Access  AccessConfig  `yaml:"access"`
 	Headers HeaderConfig  `yaml:"headers"`
+}
+
+// RPConfig is the connection to the LinkKeys RP server in RP mode.
+type RPConfig struct {
+	// Domain is the RP domain, for example "example.com". It is the
+	// audience of every assertion.
+	Domain string `yaml:"domain"`
+	// Address is the RP server's CSIL-RPC TCP endpoint, "host:port". The
+	// host is also the TLS server name.
+	Address string `yaml:"address"`
+	// DialAddress is an optional "host:port" to connect to instead of
+	// Address, for example a gateway on the LAN. TLS still uses the host of
+	// Address as the server name, and the fingerprints still apply.
+	DialAddress string `yaml:"dial_address"`
+	// Fingerprints are the SHA-256 hex fingerprints of the RP server's TLS
+	// keys. They are the trust anchor; there is no certificate authority.
+	// Use the fp= values of the _linkkeys.<domain> TXT record.
+	Fingerprints []string `yaml:"fingerprints"`
+	// APIKeyFile holds the RP API key. The file mode must be 0600.
+	APIKeyFile string `yaml:"api_key_file"`
 }
 
 // SessionConfig controls proxy sessions.
@@ -151,6 +196,13 @@ func (c *Config) applyDefaults() {
 	if c.GrafanaUsername == "" {
 		c.GrafanaUsername = UsernameSubject
 	}
+	if c.Mode == "" {
+		c.Mode = ModeLocalRP
+	}
+	c.RP.Domain = strings.TrimSuffix(strings.ToLower(c.RP.Domain), ".")
+	for i, fp := range c.RP.Fingerprints {
+		c.RP.Fingerprints[i] = strings.ToLower(fp)
+	}
 	if c.Session.TTL == 0 {
 		c.Session.TTL = Duration(12 * time.Hour)
 	}
@@ -196,12 +248,29 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("upstream must be an http or https URL with a host"))
 	}
 
-	if c.IdentityFile == "" {
-		errs = append(errs, errors.New("identity_file is required"))
+	switch c.Mode {
+	case ModeLocalRP:
+		if c.IdentityFile == "" {
+			errs = append(errs, errors.New("identity_file is required in local-rp mode"))
+		}
+	case ModeRP:
+		errs = append(errs, c.validateRP()...)
+	default:
+		errs = append(errs, fmt.Errorf("mode must be %q or %q", ModeLocalRP, ModeRP))
 	}
 
 	if c.GrafanaUsername != UsernameSubject && c.GrafanaUsername != UsernameHandle {
 		errs = append(errs, fmt.Errorf("grafana_username must be %q or %q", UsernameSubject, UsernameHandle))
+	}
+
+	c.trustedPrefixes = nil
+	for i, p := range c.TrustedProxies {
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("trusted_proxies[%d] must be a CIDR range such as 127.0.0.1/32: %w", i, err))
+			continue
+		}
+		c.trustedPrefixes = append(c.trustedPrefixes, prefix.Masked())
 	}
 
 	if time.Duration(c.Session.TTL) < time.Minute {
@@ -241,6 +310,41 @@ func (c *Config) validate() error {
 	return errors.Join(errs...)
 }
 
+var (
+	domainPattern      = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+	fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
+
+func (c *Config) validateRP() []error {
+	var errs []error
+	if !domainPattern.MatchString(c.RP.Domain) {
+		errs = append(errs, errors.New("rp.domain must be a DNS domain such as example.com"))
+	}
+	if u, err := url.Parse(c.PublicURL); err == nil && u.Host != "" && u.Scheme != "https" {
+		errs = append(errs, errors.New("public_url must use https in rp mode"))
+	}
+	for name, addr := range map[string]string{"rp.address": c.RP.Address, "rp.dial_address": c.RP.DialAddress} {
+		if addr == "" && name == "rp.dial_address" {
+			continue
+		}
+		if host, port, err := net.SplitHostPort(addr); err != nil || host == "" || port == "" {
+			errs = append(errs, fmt.Errorf("%s must be host:port", name))
+		}
+	}
+	if len(c.RP.Fingerprints) == 0 {
+		errs = append(errs, errors.New("rp.fingerprints must list at least one fingerprint"))
+	}
+	for i, fp := range c.RP.Fingerprints {
+		if !fingerprintPattern.MatchString(fp) {
+			errs = append(errs, fmt.Errorf("rp.fingerprints[%d] must be 64 hex characters", i))
+		}
+	}
+	if c.RP.APIKeyFile == "" {
+		errs = append(errs, errors.New("rp.api_key_file is required in rp mode"))
+	}
+	return errs
+}
+
 func validRole(r string) bool {
 	return r == RoleViewer || r == RoleEditor || r == RoleAdmin
 }
@@ -248,6 +352,17 @@ func validRole(r string) bool {
 // PublicOrigin returns PublicURL without a trailing slash.
 func (c *Config) PublicOrigin() string {
 	return strings.TrimSuffix(c.PublicURL, "/")
+}
+
+// IsTrustedProxy reports whether addr is in TrustedProxies.
+func (c *Config) IsTrustedProxy(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	for _, p := range c.trustedPrefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // SecureCookies reports whether cookies must carry the Secure attribute.

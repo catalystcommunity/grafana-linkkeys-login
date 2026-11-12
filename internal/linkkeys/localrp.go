@@ -1,4 +1,5 @@
-// Package linkkeys connects the proxy to the LinkKeys local-RP SDK.
+// Package linkkeys connects the proxy to LinkKeys: a local-RP identity, or
+// an RP server.
 package linkkeys
 
 import (

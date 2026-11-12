@@ -2,6 +2,12 @@ github.com/catalystcommunity/csilgen/transports/go v0.0.0-20260713013116-a661c87
 github.com/catalystcommunity/csilgen/transports/go v0.0.0-20260713013116-a661c8727022/go.mod h1:7CdM6CycSuRgLJ1Qt8A10qJZlIIlvSZG8PfkU8s0fCM=
 github.com/catalystcommunity/linkkeys/sdks/local-rp/go v0.0.0-20261021005524-9d15e36635c9 h1:BrFW/HR8iWHTNaPy23oSRkF7AbE5jh8Lejsz9xhPpew=
 github.com/catalystcommunity/linkkeys/sdks/local-rp/go v0.0.0-20261021005524-9d15e36635c9/go.mod h1:wsRI1EVGMxokp2eWK/3BhRVEKvzETh3qPTUT5hoUCFM=
+github.com/catalystcommunity/linkkeys/sdks/local-rp/go v0.0.0-20261111162140-86712a908f53 h1:7cOMDJasEbrD3jVxLzIYtkBVd9fZ/KFHv+HP+GVypM8=
+github.com/catalystcommunity/linkkeys/sdks/local-rp/go v0.0.0-20261111162140-86712a908f53/go.mod h1:wsRI1EVGMxokp2eWK/3BhRVEKvzETh3qPTUT5hoUCFM=
+github.com/catalystcommunity/linkkeys/sdks/regular-rp/go v0.0.0-20261021005524-9d15e36635c9 h1:3gy6uqYL4K3NDcoGFO5dxwJ0V0bgAINlvSPiZ7TjX70=
+github.com/catalystcommunity/linkkeys/sdks/regular-rp/go v0.0.0-20261021005524-9d15e36635c9/go.mod h1:Ksn3Q1C8CiaOYADgD1uMajzSN5NqoycdsMDv0STqxZE=
+github.com/catalystcommunity/linkkeys/sdks/regular-rp/go v0.0.0-20261111162140-86712a908f53 h1:Mws98bgOqxNxvj+jCss/pjnsHYZbWL3sYqvDQCXi4OM=
+github.com/catalystcommunity/linkkeys/sdks/regular-rp/go v0.0.0-20261111162140-86712a908f53/go.mod h1:Ksn3Q1C8CiaOYADgD1uMajzSN5NqoycdsMDv0STqxZE=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
 go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
 golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=

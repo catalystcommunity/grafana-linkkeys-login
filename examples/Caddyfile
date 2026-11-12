@@ -1,6 +1,20 @@
-# TLS in front of grafana-linkkeys-login. "tls internal" uses Caddy's own CA;
-# use a public certificate when the name is public.
-grafana.example.lan {
-	tls internal
+# TLS in front of grafana-linkkeys-login.
+#
+# For a public name, Caddy gets a public certificate. The name must resolve
+# to this host, and ports 80 and 443 must be reachable.
+grafana.example.com {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		?Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
 	reverse_proxy 127.0.0.1:3001
 }
+
+# For a name on the LAN only, use Caddy's own CA. Each device must trust
+# Caddy's root certificate.
+# grafana.example.lan {
+# 	tls internal
+# 	reverse_proxy 127.0.0.1:3001
+# }

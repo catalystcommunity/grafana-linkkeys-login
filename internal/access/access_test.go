@@ -40,7 +40,29 @@ func TestDecide(t *testing.T) {
 }
 
 func TestEmptyPolicyRefusesEveryone(t *testing.T) {
-	if _, ok := NewPolicy(config.AccessConfig{}).Decide(Identity{UserID: "u", Domain: "example.com"}); ok {
+	p := NewPolicy(config.AccessConfig{})
+	if _, ok := p.Decide(Identity{UserID: "u", Domain: "example.com"}); ok {
 		t.Fatal("empty policy allowed a login")
+	}
+	if p.AllowsDomain("example.com") {
+		t.Fatal("empty policy allowed a domain")
+	}
+}
+
+func TestAllowsDomain(t *testing.T) {
+	p := NewPolicy(config.AccessConfig{
+		Users:   []config.UserRule{{Identity: "alice@users.example", Role: config.RoleAdmin}},
+		Domains: []config.DomainRule{{Domain: "example.com", Role: config.RoleViewer}},
+	})
+	for domain, want := range map[string]bool{
+		"example.com":   true,
+		"EXAMPLE.COM":   true,
+		"users.example": true,
+		"evil.example":  false,
+		"":              false,
+	} {
+		if got := p.AllowsDomain(domain); got != want {
+			t.Errorf("AllowsDomain(%q) = %v, want %v", domain, got, want)
+		}
 	}
 }

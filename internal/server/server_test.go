@@ -308,8 +308,10 @@ func TestVerificationFailureGivesNoSession(t *testing.T) {
 
 func TestIdentityOutsideAccessRulesIsRefused(t *testing.T) {
 	h := newHarness(t, nil)
+	// The login starts for an allowed domain, but the verified identity is
+	// from another domain. Only the verified identity counts.
 	h.backend.identity = access.Identity{UserID: "u-9", Domain: "other.example", Handle: "eve"}
-	resp := h.do(loginPost("eve@other.example", "/"))
+	resp := h.do(loginPost("eve@example.com", "/"))
 	cb := httptest.NewRequest(http.MethodGet, testOrigin+PathCallback+"?encrypted_token=abc", nil)
 	cb.AddCookie(cookieNamed(resp, "__Host-lk_attempt"))
 	resp = h.do(cb)
@@ -334,6 +336,40 @@ func TestCrossSiteLoginPostIsRefused(t *testing.T) {
 	}
 }
 
+// Browsers send "Origin: null" on a same-origin post when the page's
+// referrer policy is no-referrer.
+func TestLoginPostOriginCheck(t *testing.T) {
+	cases := map[string]struct {
+		origin, site string
+		want         int
+	}{
+		"null origin, same-origin": {"null", "same-origin", http.StatusSeeOther},
+		"null origin, same-site":   {"null", "same-site", http.StatusForbidden},
+		"other origin, cross-site": {"https://evil.example", "cross-site", http.StatusForbidden},
+		"no fetch metadata, ours":  {testOrigin, "", http.StatusSeeOther},
+		"no fetch metadata, other": {"https://evil.example", "", http.StatusForbidden},
+		"no fetch metadata, null":  {"null", "", http.StatusForbidden},
+		"no headers":               {"", "", http.StatusSeeOther},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, nil)
+			r := loginPost("alice@example.com", "/")
+			r.Header.Del("Origin")
+			r.Header.Del("Sec-Fetch-Site")
+			if c.origin != "" {
+				r.Header.Set("Origin", c.origin)
+			}
+			if c.site != "" {
+				r.Header.Set("Sec-Fetch-Site", c.site)
+			}
+			if got := h.do(r).StatusCode; got != c.want {
+				t.Fatalf("status = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
 func TestBadLoginInputIsRejected(t *testing.T) {
 	h := newHarness(t, nil)
 	for _, login := range []string{"", "alice", "alice@", "@example.com", "a b@example.com", "alice@exa mple.com", "alice@@example.com"} {
@@ -343,6 +379,80 @@ func TestBadLoginInputIsRejected(t *testing.T) {
 	}
 	if len(h.backend.selectors) != 0 {
 		t.Fatalf("backend called for bad input: %v", h.backend.selectors)
+	}
+}
+
+func TestLoginForUnlistedDomainIsRefusedBeforeBackend(t *testing.T) {
+	h := newHarness(t, nil)
+	for _, login := range []string{"mallory@evil.example", "evil.example", "alice@example.com.evil.example"} {
+		if got := h.do(loginPost(login, "/")).StatusCode; got != http.StatusForbidden {
+			t.Errorf("login %q status = %d, want 403", login, got)
+		}
+	}
+	if len(h.backend.selectors) != 0 {
+		t.Fatalf("backend called for unlisted domain: %v", h.backend.selectors)
+	}
+	if got := h.do(loginPost("bob@EXAMPLE.com", "/")).StatusCode; got != http.StatusSeeOther {
+		t.Fatalf("listed domain status = %d, want 303", got)
+	}
+}
+
+func TestLoginStartIsRateLimitedPerClient(t *testing.T) {
+	h := newHarness(t, nil)
+	for i := 0; i < clientBurst; i++ {
+		if got := h.do(loginPost("alice@example.com", "/")).StatusCode; got != http.StatusSeeOther {
+			t.Fatalf("start %d status = %d, want 303", i, got)
+		}
+	}
+	resp := h.do(loginPost("alice@example.com", "/"))
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("over limit status = %d, Retry-After = %q", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	if len(h.backend.selectors) != clientBurst {
+		t.Fatalf("backend called %d times, want %d", len(h.backend.selectors), clientBurst)
+	}
+	other := loginPost("alice@example.com", "/")
+	other.RemoteAddr = "198.51.100.7:4444"
+	if got := h.do(other).StatusCode; got != http.StatusSeeOther {
+		t.Fatalf("other client status = %d, want 303", got)
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	cases := []struct {
+		name    string
+		trusted []string
+		remote  string
+		xff     []string
+		want    string
+	}{
+		{"no trusted proxies ignores header", nil, "203.0.113.5:1", []string{"198.51.100.1"}, "203.0.113.5"},
+		{"untrusted peer ignores header", []string{"127.0.0.1/32"}, "203.0.113.5:1", []string{"198.51.100.1"}, "203.0.113.5"},
+		{"trusted peer uses header", []string{"127.0.0.1/32"}, "127.0.0.1:1", []string{"198.51.100.1"}, "198.51.100.1"},
+		{"spoofed left entries ignored", []string{"127.0.0.1/32"}, "127.0.0.1:1", []string{"10.9.9.9, 198.51.100.1"}, "198.51.100.1"},
+		{"trusted hops skipped", []string{"127.0.0.1/32", "10.0.0.0/8"}, "127.0.0.1:1", []string{"198.51.100.1, 10.1.1.1"}, "198.51.100.1"},
+		{"multiple header lines", []string{"127.0.0.1/32"}, "127.0.0.1:1", []string{"10.9.9.9", "198.51.100.1"}, "198.51.100.1"},
+		{"garbage stops the walk", []string{"127.0.0.1/32"}, "127.0.0.1:1", []string{"198.51.100.1, nonsense"}, "127.0.0.1"},
+		{"no header from trusted peer", []string{"127.0.0.1/32"}, "127.0.0.1:1", nil, "127.0.0.1"},
+		{"mapped v4", nil, "[::ffff:203.0.113.5]:1", nil, "203.0.113.5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, nil)
+			cfg, err := config.Parse([]byte("public_url: " + testOrigin + "\nidentity_file: x\naccess: {domains: [{domain: example.com, role: Viewer}]}\ntrusted_proxies: [" + strings.Join(tc.trusted, ",") + "]\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.srv.cfg = cfg
+			r := httptest.NewRequest(http.MethodGet, testOrigin+"/", nil)
+			r.RemoteAddr = tc.remote
+			for _, v := range tc.xff {
+				r.Header.Add("X-Forwarded-For", v)
+			}
+			if got := h.srv.clientIP(r); got != tc.want {
+				t.Fatalf("clientIP = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

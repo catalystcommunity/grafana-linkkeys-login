@@ -3,7 +3,8 @@ module github.com/catalystcommunity/grafana-linkkeys-login
 go 1.26.4
 
 require (
-	github.com/catalystcommunity/linkkeys/sdks/local-rp/go v0.0.0-20261021005524-9d15e36635c9
+	github.com/catalystcommunity/linkkeys/sdks/local-rp/go v0.0.0-20261111162140-86712a908f53
+	github.com/catalystcommunity/linkkeys/sdks/regular-rp/go v0.0.0-20261111162140-86712a908f53
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
